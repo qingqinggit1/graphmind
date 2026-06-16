@@ -25,6 +25,7 @@ import {
   InfoCircleOutlined,
   SearchOutlined,
   ArrowLeftOutlined,
+  LinkOutlined,
 } from '@ant-design/icons';
 import { Network } from 'vis-network';
 import type { Options } from 'vis-network';
@@ -53,6 +54,7 @@ interface GraphEdge {
   to: string;
   label: string;
   weight: number;
+  id?: string;
 }
 
 interface GraphDataResponse {
@@ -73,6 +75,16 @@ interface SelectedNodeInfo {
   type: string;
   description: string;
   color: string;
+}
+
+interface SelectedEdgeInfo {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+  weight: number;
+  fromNode?: GraphNode;
+  toNode?: GraphNode;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +109,8 @@ export default function GraphView() {
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedNode, setSelectedNode] = useState<SelectedNodeInfo | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<SelectedEdgeInfo | null>(null);
+  const [drawerType, setDrawerType] = useState<'node' | 'edge'>('node');
 
   // Entity search / exploration state
   const [searchQuery, setSearchQuery] = useState('');
@@ -240,7 +254,7 @@ export default function GraphView() {
     let cancelled = false;
     setGraphLoading(true);
 
-    getEntityNeighborhood(selectedId, exploringEntity, 2)
+    getEntityNeighborhood(selectedId, exploringEntity, 1)
       .then((data: GraphDataResponse) => {
         if (!cancelled) setGraphData(data);
       })
@@ -291,10 +305,12 @@ export default function GraphView() {
 
     const edges = new DataSet(
       graphData.edges.map((e, idx) => ({
-        id: `${e.from}->${e.to}-${idx}`,
+        id: `edge-${e.from}-${e.to}-${idx}`,
         from: e.from,
         to: e.to,
-        title: e.label,
+        label: '',
+        weight: e.weight,
+        title: e.label || '点击查看详情',
         color: { color: '#555555' },
         width: Math.max(1, e.weight / 3),
       })) as any,
@@ -317,8 +333,9 @@ export default function GraphView() {
       },
       interaction: {
         hover: true,
-        tooltipDelay: 100,
         navigationButtons: true,
+        zoomView: true,
+        dragView: true,
       },
       nodes: {
         shape: 'dot',
@@ -327,6 +344,8 @@ export default function GraphView() {
       },
       edges: {
         smooth: { enabled: true, type: 'continuous', roundness: 0.5 },
+        hoverWidth: 3,
+        selectionWidth: 4,
       },
     };
 
@@ -336,8 +355,37 @@ export default function GraphView() {
       options,
     );
 
-    // Click handler — open drawer with node detail
+    // Click handler — open drawer with node or edge detail
     networkRef.current.on('click', (params) => {
+      // Check if edge was clicked
+      if (params.edges.length > 0) {
+        const edgeId = params.edges[0];
+        const edgeIndex = graphData.edges.findIndex((_, idx) =>
+          `edge-${graphData.edges[idx].from}-${graphData.edges[idx].to}-${idx}` === edgeId
+        );
+
+        if (edgeIndex !== -1) {
+          const edge = graphData.edges[edgeIndex];
+          const fromNode = graphData.nodes.find(n => n.id === edge.from);
+          const toNode = graphData.nodes.find(n => n.id === edge.to);
+
+          setSelectedEdge({
+            id: edgeId,
+            from: edge.from,
+            to: edge.to,
+            label: edge.label,
+            weight: edge.weight,
+            fromNode,
+            toNode,
+          });
+          setSelectedNode(null);
+          setDrawerType('edge');
+          setDrawerOpen(true);
+          return;
+        }
+      }
+
+      // Check if node was clicked
       if (params.nodes.length > 0) {
         const nodeId = params.nodes[0];
         const node = graphData.nodes.find((n) => n.id === nodeId);
@@ -349,6 +397,8 @@ export default function GraphView() {
             description: node.description,
             color: node.color,
           });
+          setSelectedEdge(null);
+          setDrawerType('node');
           setDrawerOpen(true);
         }
       }
@@ -359,17 +409,6 @@ export default function GraphView() {
       networkRef.current = null;
     };
   }, [graphData, exploringEntity]);
-
-  // ---------------------------------------------------------------------------
-  // Derived: connected relationships for the selected node
-  // ---------------------------------------------------------------------------
-
-  const connectedEdges = useMemo(() => {
-    if (!selectedNode || !graphData) return [];
-    return graphData.edges.filter(
-      (e) => e.from === selectedNode.id || e.to === selectedNode.id,
-    );
-  }, [selectedNode, graphData]);
 
   // ---------------------------------------------------------------------------
   // Type filter options derived from stats
@@ -416,6 +455,21 @@ export default function GraphView() {
             <NodeIndexOutlined style={{ marginRight: 8 }} />
             图谱控制面板
           </Title>
+
+          {/* Usage tip */}
+          <div
+            style={{
+              marginBottom: 16,
+              padding: '8px 12px',
+              background: '#e6f4ff',
+              borderRadius: 6,
+              fontSize: 12,
+              color: '#1677ff',
+            }}
+          >
+            <InfoCircleOutlined style={{ marginRight: 4 }} />
+            提示：悬停连线查看关系描述，点击连线查看详情
+          </div>
 
           {/* Dataset selector */}
           <div style={{ marginBottom: 20 }}>
@@ -500,7 +554,7 @@ export default function GraphView() {
                       onClose={handleBackToFullGraph}
                       style={{ fontSize: 13, padding: '4px 8px' }}
                     >
-                      探索: {exploringEntity} (2层关系)
+                      探索: {exploringEntity} (1层关系)
                     </Tag>
                     <Button
                       type="link"
@@ -673,17 +727,127 @@ export default function GraphView() {
         </Content>
       </Layout>
 
-      {/* ── Node detail drawer ──────────────────────────────────────── */}
+      {/* ── Node/Edge detail drawer ──────────────────────────────────────── */}
       <Drawer
-        title="节点详情"
+        title={drawerType === 'node' ? '节点详情' : '关系详情'}
         open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        onClose={() => {
+          setDrawerOpen(false);
+          setSelectedNode(null);
+          setSelectedEdge(null);
+        }}
         width={420}
         destroyOnClose
       >
-        {selectedNode && (
+        {/* Edge detail */}
+        {drawerType === 'edge' && selectedEdge && (
           <div>
-            {/* Basic info */}
+            {/* Relationship info */}
+            <div style={{ marginBottom: 16 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  marginBottom: 12,
+                  padding: '12px',
+                  background: '#fff7e6',
+                  borderRadius: 6,
+                  border: '1px solid #ffd591',
+                }}
+              >
+                <LinkOutlined style={{ fontSize: 20, color: '#fa8c16', marginRight: 12 }} />
+                <div style={{ flex: 1 }}>
+                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 4 }}>
+                    关系描述
+                  </Text>
+                  <Text style={{ fontSize: 13, color: '#595959' }}>
+                    {selectedEdge.label || '暂无描述'}
+                  </Text>
+                </div>
+              </div>
+
+              <Descriptions column={1} bordered size="small">
+                <Descriptions.Item label="关系强度">
+                  <Tag color="orange" style={{ fontSize: 14, padding: '2px 10px' }}>
+                    {selectedEdge.weight.toFixed(1)}
+                  </Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="起始实体">
+                  {selectedEdge.fromNode ? (
+                    <Space>
+                      <Tag color={selectedEdge.fromNode.color} style={{ fontSize: 13 }}>
+                        {selectedEdge.fromNode.type}
+                      </Tag>
+                      <Text strong>{selectedEdge.fromNode.label}</Text>
+                    </Space>
+                  ) : (
+                    <Text>{selectedEdge.from}</Text>
+                  )}
+                </Descriptions.Item>
+                <Descriptions.Item label="目标实体">
+                  {selectedEdge.toNode ? (
+                    <Space>
+                      <Tag color={selectedEdge.toNode.color} style={{ fontSize: 13 }}>
+                        {selectedEdge.toNode.type}
+                      </Tag>
+                      <Text strong>{selectedEdge.toNode.label}</Text>
+                    </Space>
+                  ) : (
+                    <Text>{selectedEdge.to}</Text>
+                  )}
+                </Descriptions.Item>
+              </Descriptions>
+            </div>
+
+            <Divider />
+
+            {/* Entity details */}
+            <Title level={5}>
+              <InfoCircleOutlined style={{ marginRight: 6 }} />
+              关联实体详情
+            </Title>
+
+            {selectedEdge.fromNode && (
+              <div style={{ marginBottom: 16 }}>
+                <Text strong style={{ display: 'block', marginBottom: 6 }}>
+                  起始实体: {selectedEdge.fromNode.label}
+                </Text>
+                <Descriptions size="small" column={1} bordered>
+                  <Descriptions.Item label="类型">
+                    <Tag color={selectedEdge.fromNode.color}>{selectedEdge.fromNode.type}</Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="描述">
+                    <Text type="secondary" ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}>
+                      {selectedEdge.fromNode.description || '暂无描述'}
+                    </Text>
+                  </Descriptions.Item>
+                </Descriptions>
+              </div>
+            )}
+
+            {selectedEdge.toNode && (
+              <div>
+                <Text strong style={{ display: 'block', marginBottom: 6 }}>
+                  目标实体: {selectedEdge.toNode.label}
+                </Text>
+                <Descriptions size="small" column={1} bordered>
+                  <Descriptions.Item label="类型">
+                    <Tag color={selectedEdge.toNode.color}>{selectedEdge.toNode.type}</Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="描述">
+                    <Text type="secondary" ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}>
+                      {selectedEdge.toNode.description || '暂无描述'}
+                    </Text>
+                  </Descriptions.Item>
+                </Descriptions>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Node detail */}
+        {drawerType === 'node' && selectedNode && (
+          <div>
             <Descriptions column={1} bordered size="small">
               <Descriptions.Item label="实体名称">
                 <Text strong>{selectedNode.label}</Text>
@@ -702,67 +866,6 @@ export default function GraphView() {
                 </Paragraph>
               </Descriptions.Item>
             </Descriptions>
-
-            <Divider />
-
-            {/* Connected relationships */}
-            <Title level={5}>
-              <AimOutlined style={{ marginRight: 6 }} />
-              关联关系 ({connectedEdges.length})
-            </Title>
-
-            {connectedEdges.length > 0 ? (
-              <List
-                dataSource={connectedEdges}
-                renderItem={(edge, idx) => {
-                  const isSource = edge.from === selectedNode.id;
-                  const otherEnd = isSource ? edge.to : edge.from;
-                  const direction = isSource ? '→' : '←';
-                  return (
-                    <List.Item
-                      key={`${edge.from}-${edge.to}-${idx}`}
-                      style={{ padding: '10px 0' }}
-                    >
-                      <div style={{ width: '100%' }}>
-                        <Space wrap>
-                          <Tag color={isSource ? 'green' : 'blue'}>
-                            {isSource ? selectedNode.label : otherEnd}
-                          </Tag>
-                          <Text type="secondary">{direction}</Text>
-                          <Tag color={isSource ? 'blue' : 'green'}>
-                            {isSource ? otherEnd : selectedNode.label}
-                          </Tag>
-                        </Space>
-                        {edge.label && (
-                          <Paragraph
-                            type="secondary"
-                            style={{
-                              marginTop: 6,
-                              marginBottom: 0,
-                              fontSize: 12,
-                            }}
-                            ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}
-                          >
-                            {edge.label}
-                          </Paragraph>
-                        )}
-                        <Text
-                          type="secondary"
-                          style={{ fontSize: 11, marginTop: 2, display: 'block' }}
-                        >
-                          权重: {edge.weight.toFixed(1)}
-                        </Text>
-                      </div>
-                    </List.Item>
-                  );
-                }}
-              />
-            ) : (
-              <Empty
-                description="无关联关系"
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-              />
-            )}
           </div>
         )}
       </Drawer>
